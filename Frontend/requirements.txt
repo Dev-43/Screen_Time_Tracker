@@ -1,0 +1,7 @@
+# BehaviorShield — Python Requirements
+# Python 3.9+  |  Windows 10/11 + Ubuntu 20.04+
+
+PyQt5>=5.15.0
+pyqtgraph>=0.13.0
+pandas>=2.0.0
+psutil>=5.9.0          # for live exe path lookup of flagged processes

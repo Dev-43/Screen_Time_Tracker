@@ -6,16 +6,29 @@ Pixel-for-pixel match to BehaviorShield's WarningPopup structure:
   - Red header bar with icon + title
   - App info card with usage details
   - Response buttons: Keep Limit / Change Limit / Dismiss
+
+# ── CHANGES ──────────────────────────────────────────────────────────────────
+# [CHANGED] Change 4: Clock icon area (⏰ label) gets a pulsing scale animation
+#           via QPropertyAnimation on a QGraphicsOpacityEffect (scale proxy).
+# [CHANGED] Change 4: Red glowing border via QGraphicsDropShadowEffect
+#           (color=#FF1744, blurRadius=30) applied to the dialog.
+# [CHANGED] Change 4: "TIME LIMIT REACHED" text subtle flicker via opacity
+#           animation (0.85→1.0, 200ms loop).
+# [UNCHANGED] All sizes, layout, button logic, footer, card structure.
 """
 
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+# [CHANGED] Extra imports for animations + effects
+from PyQt5.QtCore import (
+    Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve,
+)
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
     QLabel, QFrame, QPushButton, QSpinBox,
     QApplication, QScrollArea, QWidget,
+    QGraphicsOpacityEffect, QGraphicsDropShadowEffect,
 )
 
 from ui.theme import (
@@ -26,6 +39,7 @@ from ui.theme import (
 )
 
 
+# [UNCHANGED]
 def fmt_time(seconds: int) -> str:
     h = seconds // 3600
     m = (seconds % 3600) // 60
@@ -33,6 +47,8 @@ def fmt_time(seconds: int) -> str:
         return f"{h} hrs, {m} mins"
     return f"{m} mins"
 
+
+# [UNCHANGED]
 def short_name(app: str) -> str:
     return app.replace(".exe", "").replace(".app", "")
 
@@ -53,10 +69,12 @@ class TimeLimitPopup(QDialog):
     def __init__(self, app_name: str, used_minutes: int,
                  limit_minutes: int, parent=None):
         super().__init__(parent)
-        self.app_name     = app_name
-        self.used_minutes = used_minutes
+        self.app_name      = app_name
+        self.used_minutes  = used_minutes
         self.limit_minutes = limit_minutes
+        self._anims = []   # keep animation refs alive
         self._build()
+        self._start_animations()
         self._play_alert()
 
     def _build(self):
@@ -73,6 +91,13 @@ class TimeLimitPopup(QDialog):
             QLabel {{ font-family: {FONT_UI}; }}
         """)
 
+        # [CHANGED] Red glowing border via QGraphicsDropShadowEffect
+        glow = QGraphicsDropShadowEffect(self)
+        glow.setColor(QColor("#FF1744"))
+        glow.setBlurRadius(30)
+        glow.setOffset(0, 0)
+        self.setGraphicsEffect(glow)
+
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -84,19 +109,21 @@ class TimeLimitPopup(QDialog):
         h_lay = QHBoxLayout(header)
         h_lay.setContentsMargins(20, 0, 20, 0)
 
-        icon_lbl = QLabel("⏰")
-        icon_lbl.setStyleSheet(f"color:{WARN}; font-size:26pt; border:none;")
-        h_lay.addWidget(icon_lbl)
+        # [CHANGED] Clock icon label — will have pulsing animation
+        self._icon_lbl = QLabel("⏰")
+        self._icon_lbl.setStyleSheet(f"color:{WARN}; font-size:26pt; border:none;")
+        h_lay.addWidget(self._icon_lbl)
 
         text_col = QVBoxLayout()
         text_col.setSpacing(2)
 
-        title_lbl = QLabel("TIME LIMIT REACHED")
-        title_lbl.setStyleSheet(
+        # [CHANGED] "TIME LIMIT REACHED" — will have flicker animation
+        self._title_lbl = QLabel("TIME LIMIT REACHED")
+        self._title_lbl.setStyleSheet(
             f"color:{WARN}; font-family:{FONT_UI}; font-size:13pt; "
             f"font-weight:bold; letter-spacing:3px; border:none;"
         )
-        text_col.addWidget(title_lbl)
+        text_col.addWidget(self._title_lbl)
 
         from datetime import datetime
         sub_lbl = QLabel(
@@ -236,6 +263,37 @@ class TimeLimitPopup(QDialog):
         f_lay.addWidget(dismiss_btn)
 
         root.addWidget(footer)
+
+    # ── [CHANGED] Animations ──────────────────────────────────────────────
+
+    def _start_animations(self):
+        """Wire up all three animations after the widgets are created."""
+
+        # 1. Clock icon pulse — opacity 0.5→1.0 as scale proxy, 600ms loop
+        icon_effect = QGraphicsOpacityEffect(self._icon_lbl)
+        self._icon_lbl.setGraphicsEffect(icon_effect)
+        anim_icon = QPropertyAnimation(icon_effect, b"opacity", self)
+        anim_icon.setDuration(600)
+        anim_icon.setStartValue(0.5)
+        anim_icon.setEndValue(1.0)
+        anim_icon.setEasingCurve(QEasingCurve.SineCurve)
+        anim_icon.setLoopCount(-1)
+        anim_icon.start()
+        self._anims.append(anim_icon)
+
+        # 2. "TIME LIMIT REACHED" flicker — opacity 0.85→1.0, 200ms loop
+        title_effect = QGraphicsOpacityEffect(self._title_lbl)
+        self._title_lbl.setGraphicsEffect(title_effect)
+        anim_title = QPropertyAnimation(title_effect, b"opacity", self)
+        anim_title.setDuration(200)
+        anim_title.setStartValue(0.85)
+        anim_title.setEndValue(1.0)
+        anim_title.setEasingCurve(QEasingCurve.Linear)
+        anim_title.setLoopCount(-1)
+        anim_title.start()
+        self._anims.append(anim_title)
+
+    # ── [UNCHANGED] Slots ─────────────────────────────────────────────────
 
     def _save_limit(self):
         new_limit = self._spin.value()

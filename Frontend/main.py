@@ -32,13 +32,13 @@ def main():
     db_path = args.db if args.db else get_default_db_path()
     print(f"[ScreenTracker] Using database: {db_path}")
 
+    # High DPI — MUST be set before QApplication is created
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
     app = QApplication(sys.argv)
     app.setApplicationName("Screen Tracker")
     app.setOrganizationName("ScreenTracker")
-
-    # High DPI
-    app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     # Apply theme stylesheet globally — same as BehaviorShield
     app.setStyleSheet(STYLESHEET)

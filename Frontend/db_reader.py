@@ -1,10 +1,13 @@
 """
-[CHANGED] Added get_weekly_screen_time() -> dict for Mon-Sun weekly totals.
-[UNCHANGED] All other base DB reading and methods are kept exactly as is.
 Screen Tracker — DB Reader
 ===========================
 Reads from the SQLite database written by the C++ logger.
 Same pattern as BehaviorShield's DBReader.
+
+# ── CHANGES ──────────────────────────────────────────────────────────────────
+# [CHANGED] Added get_weekly_screen_time() — Mon-Sun totals across all apps
+# [CHANGED] Added get_app_weekly_screen_time(app_name) — Mon-Sun totals per app
+# [UNCHANGED] All other methods preserved exactly as-is
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 
 
+# [UNCHANGED]
 def get_default_db_path() -> str:
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA", ".")
@@ -27,10 +31,12 @@ def get_default_db_path() -> str:
 
 
 class DBReader:
+    # [UNCHANGED]
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._check_schema()
 
+    # [UNCHANGED]
     def _connect(self) -> Optional[sqlite3.Connection]:
         if not Path(self.db_path).exists():
             return None
@@ -41,6 +47,7 @@ class DBReader:
         except Exception:
             return None
 
+    # [UNCHANGED]
     def _check_schema(self):
         """Check which columns exist — same pattern as BehaviorShield."""
         conn = self._connect()
@@ -55,11 +62,13 @@ class DBReader:
             self.columns = []
             conn.close()
 
+    # [UNCHANGED]
     def is_logger_schema_ready(self) -> bool:
         return bool(self.columns)
 
     # ── Live data ─────────────────────────────────────────────────────────
 
+    # [UNCHANGED]
     def get_recent_rows(self, limit: int = 60) -> list:
         """Last N rows from screen_logs — for live chart."""
         conn = self._connect()
@@ -76,6 +85,7 @@ class DBReader:
             conn.close()
             return self._fake_recent(limit)
 
+    # [UNCHANGED]
     def get_latest_row(self) -> Optional[object]:
         """Single most recent row."""
         conn = self._connect()
@@ -92,6 +102,7 @@ class DBReader:
             conn.close()
             return None
 
+    # [UNCHANGED]
     def get_row_count(self) -> int:
         conn = self._connect()
         if not conn:
@@ -107,6 +118,7 @@ class DBReader:
 
     # ── Today stats ───────────────────────────────────────────────────────
 
+    # [UNCHANGED]
     def get_today_apps(self) -> List[Tuple[str, int]]:
         """Returns (app_name, active_seconds) for today, sorted desc."""
         conn = self._connect()
@@ -131,6 +143,7 @@ class DBReader:
             conn.close()
         return self._fake_apps()
 
+    # [UNCHANGED]
     def get_today_totals(self) -> Tuple[int, int]:
         """Returns (active_seconds, idle_seconds) for today."""
         conn = self._connect()
@@ -156,6 +169,7 @@ class DBReader:
 
     # ── Week data ─────────────────────────────────────────────────────────
 
+    # [UNCHANGED]
     def get_week_daily_totals(self) -> List[Tuple[str, int]]:
         """(date_str, active_sec) for last 7 days."""
         result = []
@@ -185,16 +199,22 @@ class DBReader:
             conn.close()
         return self._fake_week()
 
-    # [CHANGED] Weekly screen time grouped by Day of Week
+    # [CHANGED] Weekly totals across ALL apps grouped by Mon-Sun day of week
     def get_weekly_screen_time(self) -> dict:
+        """
+        Returns dict {day_label: minutes} for Mon-Sun of the current week
+        (all apps combined). Falls back to zero-filled dict on DB error.
+        """
         order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         result = {k: 0 for k in order}
         conn = self._connect()
         if not conn:
-            return result
+            # Fallback: fake demo data so the chart still renders
+            return {k: random.randint(30, 480) for k in order}
         try:
             now = datetime.now()
-            monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+            monday = (now - timedelta(days=now.weekday())).replace(
+                hour=0, minute=0, second=0, microsecond=0)
             week_start_ts = int(monday.timestamp())
             week_end_ts = int((monday + timedelta(days=7)).timestamp())
 
@@ -207,7 +227,9 @@ class DBReader:
                 GROUP BY dow
             """, (week_start_ts, week_end_ts))
             rows = cur.fetchall()
-            idx_map = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat", 0: "Sun"}
+            # SQLite strftime('%w'): 0=Sun,1=Mon,...,6=Sat
+            idx_map = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu",
+                       5: "Fri", 6: "Sat", 0: "Sun"}
             for row in rows:
                 key = idx_map.get(int(row["dow"]))
                 if key:
@@ -215,12 +237,58 @@ class DBReader:
             conn.close()
             return result
         except Exception:
-            try: conn.close()
-            except: pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return result
+
+    # [CHANGED] Per-app weekly totals grouped by Mon-Sun day of week
+    def get_app_weekly_screen_time(self, app_name: str) -> dict:
+        """
+        Returns dict {day_label: minutes} for Mon-Sun of the current week
+        for a specific app. Falls back to zero-filled dict on DB error.
+        """
+        order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        result = {k: 0 for k in order}
+        conn = self._connect()
+        if not conn:
+            return {k: random.randint(0, 120) for k in order}
+        try:
+            now = datetime.now()
+            monday = (now - timedelta(days=now.weekday())).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            week_start_ts = int(monday.timestamp())
+            week_end_ts = int((monday + timedelta(days=7)).timestamp())
+
+            cur = conn.execute("""
+                SELECT
+                    strftime('%w', timestamp, 'unixepoch', 'localtime') AS dow,
+                    COUNT(*) AS active_sec
+                FROM screen_logs
+                WHERE timestamp >= ? AND timestamp < ?
+                  AND app_name = ? AND is_idle = 0
+                GROUP BY dow
+            """, (week_start_ts, week_end_ts, app_name))
+            rows = cur.fetchall()
+            idx_map = {1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu",
+                       5: "Fri", 6: "Sat", 0: "Sun"}
+            for row in rows:
+                key = idx_map.get(int(row["dow"]))
+                if key:
+                    result[key] = int((row["active_sec"] or 0) / 60)
+            conn.close()
+            return result
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
             return result
 
     # ── App detail ────────────────────────────────────────────────────────
 
+    # [UNCHANGED]
     def get_app_hourly(self, app_name: str) -> List[Tuple[int, int]]:
         """Per-hour active seconds for app today."""
         conn = self._connect()
@@ -247,6 +315,7 @@ class DBReader:
 
     # ── Time limits ───────────────────────────────────────────────────────
 
+    # [UNCHANGED]
     def get_time_limit(self, app_name: str) -> Optional[int]:
         conn = self._connect()
         if not conn:
@@ -263,6 +332,7 @@ class DBReader:
             conn.close()
             return None
 
+    # [UNCHANGED]
     def set_time_limit(self, app_name: str, minutes: int):
         conn = self._connect()
         if not conn:
@@ -277,6 +347,7 @@ class DBReader:
         except Exception:
             conn.close()
 
+    # [UNCHANGED]
     def get_all_time_limits(self) -> dict:
         conn = self._connect()
         if not conn:
@@ -292,6 +363,7 @@ class DBReader:
 
     # ── CPU history (last N seconds from DB) ──────────────────────────────
 
+    # [UNCHANGED]
     def get_cpu_history(self, limit: int = 120) -> List[float]:
         conn = self._connect()
         if not conn:
@@ -310,6 +382,7 @@ class DBReader:
             conn.close()
         return [random.uniform(5, 40) for _ in range(limit)]
 
+    # [UNCHANGED]
     def get_ram_history(self, limit: int = 120) -> List[float]:
         conn = self._connect()
         if not conn:
@@ -330,12 +403,14 @@ class DBReader:
 
     # ── Fake data for demo ────────────────────────────────────────────────
 
+    # [UNCHANGED]
     def _fake_apps(self):
         return [
             ("chrome.exe", 4320), ("code.exe", 3600), ("slack.exe", 1800),
             ("discord.exe", 900),  ("explorer.exe", 720), ("spotify.exe", 540),
         ]
 
+    # [UNCHANGED]
     def _fake_week(self):
         result = []
         for i in range(6, -1, -1):
@@ -343,9 +418,11 @@ class DBReader:
             result.append((d, random.randint(3600, 28800)))
         return result
 
+    # [UNCHANGED]
     def _fake_hourly(self):
         return [(h, random.randint(0, 3600) if 9 <= h <= 18 else random.randint(0, 300))
                 for h in range(24)]
 
+    # [UNCHANGED]
     def _fake_recent(self, limit: int):
         return []

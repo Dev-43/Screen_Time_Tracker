@@ -4,17 +4,32 @@ Screen Tracker — App Detail Tab
 Tab 2: Detailed view for a specific app.
 Shows hourly bar chart + time limit controls.
 Same panel/card style as BehaviorShield.
+
+# ── CHANGES ──────────────────────────────────────────────────────────────────
+# [CHANGED] Change 2: "HOURLY USAGE — TODAY" label replaced with Today/This Week
+#           toggle buttons (QHBoxLayout). Graph backed by custom RoundedGradientBars
+#           (pg.GraphicsObject, gradient fill, hover tooltips). Toggle switches
+#           between hourly (00h-23h) and weekly (Mon-Sun) data.
+# [CHANGED] Change 3: App header gets a colored status dot (8px, red pulses).
+# [UNCHANGED] Container sizes, layout proportions, CPU/RAM cards, limit panel.
 """
 
 from __future__ import annotations
 from datetime import datetime
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QBrush, QFont
+# [CHANGED] Extra imports for animations, gradient painting, tooltips
+from PyQt5.QtCore import (
+    Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, QRectF,
+)
+from PyQt5.QtGui import (
+    QColor, QBrush, QFont, QPainter, QPainterPath,
+    QLinearGradient,
+)
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QFrame, QPushButton, QSpinBox,
-    QSizePolicy, QScrollArea,
+    QSizePolicy, QScrollArea, QGraphicsOpacityEffect,
+    QToolTip,
 )
 
 from ui.theme import (
@@ -31,6 +46,7 @@ pg.setConfigOption("foreground", TEXT_DIM)
 pg.setConfigOption("antialias", True)
 
 
+# [UNCHANGED]
 def fmt_time(seconds: int) -> str:
     h = seconds // 3600
     m = (seconds % 3600) // 60
@@ -38,11 +54,13 @@ def fmt_time(seconds: int) -> str:
         return f"{h} hrs, {m} mins"
     return f"{m} mins"
 
+
+# [UNCHANGED]
 def short_name(app: str) -> str:
     return app.replace(".exe", "").replace(".app", "")
 
 
-# ── Stat Cell ─────────────────────────────────────────────────────────────────
+# ── [UNCHANGED] Stat Cell ─────────────────────────────────────────────────────
 
 def make_stat(label: str, value: str, color: str = TEXT) -> QFrame:
     """Small labeled stat — same pattern as BehaviorShield detail fields."""
@@ -73,14 +91,178 @@ def make_stat(label: str, value: str, color: str = TEXT) -> QFrame:
     return frame
 
 
+# ── [CHANGED] Custom Rounded Gradient Bar Item ────────────────────────────────
+
+class RoundedGradientBars(pg.GraphicsObject):
+    """
+    Custom pg.GraphicsObject.
+    Draws bars with rounded top corners + QLinearGradient fill (cyan→dark blue).
+    Provides hover tooltip: "X mins at Yh" (hourly) or "X mins on Day" (weekly).
+    """
+    def __init__(self, x_vals, y_vals, labels, width=0.6, mode="hourly"):
+        super().__init__()
+        self._x      = list(x_vals)
+        self._y      = list(y_vals)
+        self._labels = list(labels)   # human-readable labels for tooltip
+        self._width  = width
+        self._mode   = mode           # "hourly" or "weekly"
+        self._picture = None
+        self.setAcceptHoverEvents(True)
+        self._build_picture()
+
+    def _build_picture(self):
+        from PyQt5.QtGui import QPicture
+        self._picture = QPicture()
+        p = QPainter(self._picture)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        for x, y in zip(self._x, self._y):
+            if y <= 0:
+                continue
+
+            # Gradient: top=#00E5FF, bottom=#004D99
+            grad = QLinearGradient(x, y, x, 0)
+            grad.setColorAt(0.0, QColor("#004D99"))
+            grad.setColorAt(1.0, QColor("#00E5FF"))
+
+            p.setBrush(QBrush(grad))
+            p.setPen(Qt.NoPen)
+
+            # Build path: flat bottom, rounded top corners via quadTo
+            r  = min(5.0, self._width / 2.0, y / 2.0)
+            x0 = x - self._width / 2.0
+            x1 = x + self._width / 2.0
+
+            path = QPainterPath()
+            path.moveTo(x0, 0)              # bottom-left
+            path.lineTo(x0, y - r)          # left side up
+            path.quadTo(x0, y, x0 + r, y)  # top-left rounded corner
+            path.lineTo(x1 - r, y)          # top edge
+            path.quadTo(x1, y, x1, y - r)  # top-right rounded corner
+            path.lineTo(x1, 0)              # right side down
+            path.closeSubpath()
+            p.drawPath(path)
+
+        p.end()
+
+    def paint(self, p, *args):
+        self._picture.play(p)
+
+    def boundingRect(self):
+        if not self._x or not self._y:
+            return QRectF()
+        max_y = max(self._y) if self._y else 1
+        return QRectF(
+            self._x[0] - self._width,
+            0,
+            (self._x[-1] - self._x[0] + 2 * self._width) if len(self._x) > 1 else self._width * 2,
+            max_y * 1.1,
+        )
+
+    def hoverEvent(self, event):
+        """Show QToolTip with X mins at/on label."""
+        if event.isExit():
+            QToolTip.hideText()
+            return
+        pos = event.pos()
+        px  = pos.x()
+        for i, (x, y) in enumerate(zip(self._x, self._y)):
+            if abs(px - x) < self._width / 2:
+                mins = int(round(y))
+                lbl  = self._labels[i]
+                if self._mode == "hourly":
+                    tip = f"{mins} mins at {lbl}"
+                else:
+                    tip = f"{mins} mins on {lbl}"
+                scene_pos = event.screenPos()
+                QToolTip.showText(
+                    scene_pos.toPoint(),
+                    tip,
+                )
+                return
+        QToolTip.hideText()
+
+
+# ── [CHANGED] Status Dot for App Header ──────────────────────────────────────
+
+class StatusDot(QLabel):
+    """
+    8px colored dot prepended to app name.
+    If red (LIMIT HIT), pulses size via opacity animation (best proxy in QLabel).
+    """
+    def __init__(self, parent=None):
+        super().__init__("●", parent)
+        self._anim = None
+        self._green()
+
+    def _green(self):
+        if self._anim:
+            self._anim.stop()
+            self._anim = None
+        self.setGraphicsEffect(None)
+        self.setStyleSheet(
+            "color: #00C853; font-size: 8pt; background: transparent; border: none;"
+        )
+
+    def _red(self):
+        self.setStyleSheet(
+            "color: #FF1744; font-size: 8pt; background: transparent; border: none;"
+        )
+        effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(effect)
+        self._anim = QPropertyAnimation(effect, b"opacity", self)
+        self._anim.setDuration(800)
+        self._anim.setStartValue(0.3)
+        self._anim.setEndValue(1.0)
+        self._anim.setEasingCurve(QEasingCurve.SineCurve)
+        self._anim.setLoopCount(-1)
+        self._anim.start()
+
+    def set_limit_hit(self, hit: bool):
+        if hit:
+            self._red()
+        else:
+            self._green()
+
+
+# ── [CHANGED] Toggle Buttons for hourly/weekly graph ─────────────────────────
+
+_TOGGLE_ACTIVE = """
+    QPushButton {
+        background: #00E5FF;
+        color: #0D1B2A;
+        border-radius: 5px;
+        padding: 4px 12px;
+        font-weight: bold;
+        font-size: 8pt;
+        border: none;
+    }
+"""
+_TOGGLE_INACTIVE = """
+    QPushButton {
+        background: transparent;
+        color: #607D8B;
+        border: 1px solid #1E2A3A;
+        border-radius: 5px;
+        padding: 4px 12px;
+        font-size: 8pt;
+    }
+"""
+
+
 # ── App Detail Tab ────────────────────────────────────────────────────────────
 
 class AppDetailTab(QWidget):
     """
     Detailed view for a selected app.
     Mirrors BehaviorShield's process detail panel layout.
+
+    [CHANGED] Graph header → Today/This Week toggle buttons.
+    [CHANGED] Bar chart → RoundedGradientBars with hover tooltip.
+    [CHANGED] App title bar → prepended colored StatusDot.
+    [UNCHANGED] All layout proportions, container sizes, limit panel.
     """
-    go_back = pyqtSignal()
+    go_back     = pyqtSignal()
     limit_saved = pyqtSignal(str, int)   # app_name, minutes
 
     def __init__(self, db_reader, parent=None):
@@ -88,6 +270,7 @@ class AppDetailTab(QWidget):
         self.db       = db_reader
         self.app_name = ""
         self.seconds  = 0
+        self._view    = "today"   # "today" | "weekly"
         self._build()
 
     def _build(self):
@@ -109,6 +292,10 @@ class AppDetailTab(QWidget):
         top_lay.addWidget(back_btn)
 
         top_lay.addSpacing(16)
+
+        # [CHANGED] Status dot before app name
+        self._status_dot = StatusDot()
+        top_lay.addWidget(self._status_dot)
 
         self._app_title = QLabel("—")
         self._app_title.setStyleSheet(
@@ -154,30 +341,50 @@ class AppDetailTab(QWidget):
         hourly_lay.setContentsMargins(10, 8, 10, 8)
         hourly_lay.setSpacing(4)
 
-        hourly_title = QLabel("HOURLY USAGE — TODAY")
-        hourly_title.setStyleSheet(
-            f"color:{TEXT_DIM}; font-family:{FONT_UI}; font-size:8pt; "
-            f"letter-spacing:2px; background:transparent; border:none;"
-        )
-        hourly_lay.addWidget(hourly_title)
+        # [CHANGED] Toggle button row replaces plain "HOURLY USAGE — TODAY" label
+        toggle_row = QHBoxLayout()
+        toggle_row.setSpacing(6)
+        toggle_row.setContentsMargins(0, 0, 0, 0)
 
+        self._btn_today = QPushButton("Today")
+        self._btn_today.setFixedHeight(26)
+        self._btn_today.clicked.connect(self._switch_today)
+
+        self._btn_week = QPushButton("This Week")
+        self._btn_week.setFixedHeight(26)
+        self._btn_week.clicked.connect(self._switch_weekly)
+
+        toggle_row.addWidget(self._btn_today)
+        toggle_row.addWidget(self._btn_week)
+        toggle_row.addStretch()
+        hourly_lay.addLayout(toggle_row)
+
+        # [CHANGED] PlotWidget with #0A1628 background, visible horizontal grid
         self._hourly_plot = pg.PlotWidget()
-        self._hourly_plot.setBackground(CHART_BG)
-        self._hourly_plot.showGrid(x=False, y=True, alpha=0.15)
+        self._hourly_plot.setBackground("#0A1628")
         self._hourly_plot.setMouseEnabled(False, False)
         self._hourly_plot.setMenuEnabled(False)
-        self._hourly_plot.getAxis("bottom").setStyle(
-            tickFont=QFont(FONT_DATA, 8)
-        )
-        self._hourly_plot.getAxis("left").setStyle(
-            tickFont=QFont(FONT_DATA, 8)
-        )
+
+        # [CHANGED] Explicit grid pen — visible on dark background
+        _grid_pen = pg.mkPen(color="#2A3F5F", width=1, style=Qt.SolidLine)
+        self._hourly_plot.getPlotItem().getAxis("left").setGrid(180)   # y grid alpha 0-255
+        self._hourly_plot.getPlotItem().getAxis("bottom").setGrid(0)    # no x grid
+        # Override the grid pen used by the axes
+        self._hourly_plot.getAxis("left").setPen(pg.mkPen(color="#1E2A3A", width=1))
+        self._hourly_plot.getAxis("bottom").setPen(pg.mkPen(color="#1E2A3A", width=1))
+        self._hourly_plot.getAxis("bottom").setTextPen(pg.mkPen(TEXT_DIM))
+        self._hourly_plot.getAxis("left").setTextPen(pg.mkPen(TEXT_DIM))
+        self._hourly_plot.getAxis("bottom").setStyle(tickFont=QFont(FONT_DATA, 8))
+        self._hourly_plot.getAxis("left").setStyle(tickFont=QFont(FONT_DATA, 8))
         self._hourly_plot.setMinimumHeight(160)
+        # [CHANGED] Permanently clamp Y >= 0 so negative axis never appears
+        self._hourly_plot.getViewBox().setLimits(yMin=0)
+        self._hourly_plot.getViewBox().disableAutoRange()
         hourly_lay.addWidget(self._hourly_plot)
 
         charts_row.addWidget(hourly_frame, 2)
 
-        # Right column: CPU + RAM mini cards
+        # [UNCHANGED] Right column: CPU + RAM mini cards
         right_col = QVBoxLayout()
         right_col.setSpacing(10)
 
@@ -247,6 +454,29 @@ class AppDetailTab(QWidget):
 
         root.addWidget(limit_frame)
 
+        # Set initial toggle state
+        self._apply_toggle("today")
+
+    # ── [CHANGED] Toggle helpers ──────────────────────────────────────────
+
+    def _apply_toggle(self, view: str):
+        """Style the buttons and store current view."""
+        self._view = view
+        if view == "today":
+            self._btn_today.setStyleSheet(_TOGGLE_ACTIVE)
+            self._btn_week.setStyleSheet(_TOGGLE_INACTIVE)
+        else:
+            self._btn_today.setStyleSheet(_TOGGLE_INACTIVE)
+            self._btn_week.setStyleSheet(_TOGGLE_ACTIVE)
+
+    def _switch_today(self):
+        self._apply_toggle("today")
+        self._update_hourly()
+
+    def _switch_weekly(self):
+        self._apply_toggle("weekly")
+        self._update_weekly()
+
     # ── Load app data ─────────────────────────────────────────────────────
 
     def load(self, app_name: str, seconds: int):
@@ -260,12 +490,17 @@ class AppDetailTab(QWidget):
         self._stat_total._find_val().setText(fmt_time(seconds))
 
         limit = self.db.get_time_limit(app_name)
+        limit_hit = bool(limit and (seconds // 60) >= limit)
+
+        # [CHANGED] Update status dot
+        self._status_dot.set_limit_hit(limit_hit)
+
         if limit:
             self._limit_spin.setValue(limit)
             self._stat_limit._find_val().setText(f"{limit} min/day")
             used_pct = min(100, int((seconds / 60) / limit * 100))
             self._stat_pct._find_val().setText(f"{used_pct}%")
-            if (seconds // 60) >= limit:
+            if limit_hit:
                 self._stat_status._find_val().setText("⚠ LIMIT HIT")
                 self._stat_status._find_val().setStyleSheet(
                     f"color:{DANGER}; font-family:{FONT_DATA}; font-size:12pt; "
@@ -282,35 +517,69 @@ class AppDetailTab(QWidget):
             self._stat_pct._find_val().setText("—")
             self._stat_status._find_val().setText("✓  OK")
 
-        # Hourly chart
-        self._update_hourly()
+        # Draw chart in current view
+        if self._view == "today":
+            self._update_hourly()
+        else:
+            self._update_weekly()
 
+    # [CHANGED] Hourly chart — custom rounded gradient bars, 00h-21h x-axis
     def _update_hourly(self):
+        import math
         hourly = self.db.get_app_hourly(self.app_name)
-        x = [h for h, _ in hourly]
-        y = [s / 60 for _, s in hourly]   # minutes
+        x_vals = [h for h, _ in hourly]
+        y_vals = [s / 60 for _, s in hourly]   # seconds → minutes
+        labels = [f"{h:02d}h" for h, _ in hourly]
 
         self._hourly_plot.clear()
-        color = app_color(0)
-        bars = pg.BarGraphItem(
-            x=x, height=y, width=0.7,
-            brush=pg.mkBrush(color + "CC"),
-            pen=pg.mkPen(color, width=1),
-        )
+        bars = RoundedGradientBars(x_vals, y_vals, labels, width=0.6, mode="hourly")
         self._hourly_plot.addItem(bars)
 
-        labels = [(i, f"{i:02d}h") for i in range(0, 24, 3)]
-        self._hourly_plot.getAxis("bottom").setTicks([labels])
+        # X-axis: 00h, 03h … 21h
+        tick_labels = [(i, f"{i:02d}h") for i in range(0, 24, 3)]
+        self._hourly_plot.getAxis("bottom").setTicks([tick_labels])
         self._hourly_plot.setLabel("left", "minutes", color=TEXT_DIM,
                                    **{"font-size": "8pt"})
 
-    # ── Live update ───────────────────────────────────────────────────────
+        # [CHANGED] Dynamic Y: round up to next 5-minute mark for clean ticks
+        raw_max = max(y_vals) if any(y > 0 for y in y_vals) else 5.0
+        nice_max = max(math.ceil(raw_max * 1.15 / 5) * 5, 5)   # multiples of 5 min
+        self._hourly_plot.getViewBox().disableAutoRange()
+        self._hourly_plot.setYRange(0, nice_max, padding=0)
+
+    # [CHANGED] Weekly chart — Mon-Sun, per-app data, Y axis in HOURS
+    def _update_weekly(self):
+        import math
+        days   = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        weekly = self.db.get_app_weekly_screen_time(self.app_name)
+        x_vals = list(range(len(days)))
+        # [CHANGED] Convert minutes → hours for the Y axis
+        y_vals = [weekly.get(d, 0) / 60 for d in days]
+        labels = days
+
+        self._hourly_plot.clear()
+        bars = RoundedGradientBars(x_vals, y_vals, labels, width=0.6, mode="weekly")
+        self._hourly_plot.addItem(bars)
+
+        ticks = [(i, d) for i, d in enumerate(days)]
+        self._hourly_plot.getAxis("bottom").setTicks([ticks])
+        # [CHANGED] Label is now 'hours' not 'minutes'
+        self._hourly_plot.setLabel("left", "hours", color=TEXT_DIM,
+                                   **{"font-size": "8pt"})
+
+        # [CHANGED] Dynamic Y: ceil to next whole hour for clean integer ticks
+        raw_max = max(y_vals) if any(y > 0 for y in y_vals) else 1.0
+        nice_max = max(math.ceil(raw_max * 1.15), 1)   # at least 1 h ceiling
+        self._hourly_plot.getViewBox().disableAutoRange()
+        self._hourly_plot.setYRange(0, nice_max, padding=0)
+
+    # ── [UNCHANGED] Live update ───────────────────────────────────────────
 
     def push_live(self, cpu: float, ram_mb: float):
         self.card_cpu.push(cpu)
         self.card_ram.push(ram_mb)
 
-    # ── Limit actions ─────────────────────────────────────────────────────
+    # ── [UNCHANGED] Limit actions ─────────────────────────────────────────
 
     def _save_limit(self):
         minutes = self._limit_spin.value()
@@ -326,6 +595,7 @@ class AppDetailTab(QWidget):
 
 # ── Patch make_stat to expose val label ──────────────────────────────────────
 
+# [UNCHANGED]
 def _find_val(self):
     """Helper to reach the value label inside a stat frame."""
     lay = self.layout()

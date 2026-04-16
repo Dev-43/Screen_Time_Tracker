@@ -89,6 +89,7 @@ class MainWindow(QMainWindow):
         self.tab_detail = AppDetailTab(self.db_reader)
         self.tab_detail.go_back.connect(self._go_back)
         self.tab_detail.limit_saved.connect(self._on_limit_saved)
+        self.tab_detail.category_changed.connect(self.tab_dashboard.refresh)
         self.tabs.addTab(self.tab_detail, "  App Detail  ")
         self.tabs.setTabEnabled(1, False)
 

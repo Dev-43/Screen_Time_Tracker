@@ -37,7 +37,7 @@ from ui.theme import (
     BG_PANEL, BG_BASE, BORDER, ACCENT, SAFE, WARN, DANGER,
     TEXT, TEXT_DIM, FONT_DATA, FONT_UI,
     CHART_CPU, CHART_RAM, CHART_TIME, CHART_BG,
-    app_color,
+    app_color, CATEGORY_COLORS,
 )
 
 import pyqtgraph as pg
@@ -438,9 +438,9 @@ class AppTable(QWidget):
 
         # [UNCHANGED] Table configuration
         self._table = QTableWidget()
-        self._table.setColumnCount(4)
+        self._table.setColumnCount(5)
         self._table.setHorizontalHeaderLabels(
-            ["APP NAME", "TODAY'S USAGE", "TIME LIMIT", "STATUS"]
+            ["APP NAME", "CATEGORY", "TODAY'S USAGE", "TIME LIMIT", "STATUS"]
         )
         self._table.setAlternatingRowColors(False)   # [CHANGED] We paint manually
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -451,6 +451,7 @@ class AppTable(QWidget):
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self._table.setShowGrid(False)
         self._table.cellClicked.connect(self._on_click)
 
@@ -470,28 +471,55 @@ class AppTable(QWidget):
 
         layout.addWidget(self._table)
 
-    def update_apps(self, apps: list[tuple[str, int]], limits: dict):
+    def update_apps(self, apps: list[tuple[str, int]], limits: dict, categories: dict = None):
         self._apps = apps
         self._pill_refs = []
         self._count_lbl.setText(f"{len(apps)} apps")
         self._table.setRowCount(len(apps))
+        if categories is None:
+            categories = {}
 
         for row, (app_name, seconds) in enumerate(apps):
             # [UNCHANGED] row height
             self._table.setRowHeight(row, 32)
 
-            # [UNCHANGED] App name column
+            # [UNCHANGED] App name column (col 0)
             name_item = QTableWidgetItem(f"  {short_name(app_name)}")
             name_item.setForeground(QBrush(QColor(app_color(row))))
             self._table.setItem(row, 0, name_item)
 
-            # [UNCHANGED] Usage column
+            # [NEW] Category column (col 1) — colored pill badge
+            cat = categories.get(app_name, "Other")
+            cat_color = CATEGORY_COLORS.get(cat, "#64748b")
+            cat_pill = QLabel(cat)
+            cat_pill.setAlignment(Qt.AlignCenter)
+            cat_pill.setStyleSheet(f"""
+                QLabel {{
+                    background: {cat_color}22;
+                    color: {cat_color};
+                    border: 1px solid {cat_color}66;
+                    border-radius: 9px;
+                    padding: 2px 9px;
+                    font-size: 8pt;
+                    font-weight: bold;
+                }}
+            """)
+            cat_pill.setFixedHeight(22)
+            cat_container = QWidget()
+            cat_container.setStyleSheet("background: transparent;")
+            cc_lay = QHBoxLayout(cat_container)
+            cc_lay.setContentsMargins(4, 4, 4, 4)
+            cc_lay.addWidget(cat_pill)
+            cc_lay.addStretch()
+            self._table.setCellWidget(row, 1, cat_container)
+
+            # [UNCHANGED] Usage column (col 2)
             usage_item = QTableWidgetItem(fmt_time(seconds))
             usage_item.setForeground(QBrush(QColor(TEXT)))
             usage_item.setFont(QFont(FONT_DATA, 9))
-            self._table.setItem(row, 1, usage_item)
+            self._table.setItem(row, 2, usage_item)
 
-            # [UNCHANGED] Time limit column
+            # [UNCHANGED] Time limit column (col 3)
             limit = limits.get(app_name)
             if limit:
                 limit_item = QTableWidgetItem(f"{limit} min/day")
@@ -499,9 +527,9 @@ class AppTable(QWidget):
             else:
                 limit_item = QTableWidgetItem("—  Set limit")
                 limit_item.setForeground(QBrush(QColor(TEXT_DIM)))
-            self._table.setItem(row, 2, limit_item)
+            self._table.setItem(row, 3, limit_item)
 
-            # [CHANGED] Status column — pill badge widget instead of plain text
+            # [UNCHANGED] Status column (col 4) — pill badge widget
             limit_hit = bool(limit and (seconds // 60) >= limit)
             pill_text = "LIMIT HIT" if limit_hit else "OK"
             pill = StatusPill(pill_text, limit_hit=limit_hit)
@@ -514,7 +542,7 @@ class AppTable(QWidget):
             c_lay.setContentsMargins(4, 2, 4, 2)
             c_lay.addWidget(pill)
             c_lay.addStretch()
-            self._table.setCellWidget(row, 3, container)
+            self._table.setCellWidget(row, 4, container)
 
     def _on_click(self, row: int, _col: int):
         if row < len(self._apps):
@@ -602,13 +630,14 @@ class DashboardTab(QWidget):
 
     def refresh(self):
         """Full data refresh — call every 30s."""
-        apps   = self.db.get_today_apps()
-        limits = self.db.get_all_time_limits()
+        apps       = self.db.get_today_apps()
+        limits     = self.db.get_all_time_limits()
+        categories = self.db.get_all_categories()
         active_sec, idle_sec = self.db.get_today_totals()
 
         self.card_time.update_time(active_sec)   # [CHANGED] pill badge
         self.card_time.refresh_chart()            # [CHANGED] weekly bar chart
-        self.app_table.update_apps(apps, limits)
+        self.app_table.update_apps(apps, limits, categories)
 
     def push_live(self, cpu: float, ram_mb: float, is_active: bool):
         """Called every second by the worker timer."""

@@ -40,11 +40,21 @@ CHART_TIME   = "#10b981"   # green — active screen time
 CHART_IDLE   = "#374151"   # muted — idle time
 CHART_BG     = "#050810"
 
-# App category colors
+# App row color cycling
 CAT_COLORS = [
     "#00d4ff", "#818cf8", "#10b981", "#f59e0b",
     "#ef4444", "#34d399", "#a78bfa", "#fb7185",
 ]
+
+# Per-category pill colors
+CATEGORY_COLORS = {
+    "Productivity":   "#10b981",   # emerald green
+    "Entertainment":  "#818cf8",   # indigo
+    "Social":         "#fb7185",   # rose
+    "System":         "#64748b",   # slate
+    "Tools":          "#f59e0b",   # amber
+    "Other":          "#374151",   # muted grey
+}
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 

@@ -28,6 +28,7 @@ class PollWorker(QThread):
     limit_check = pyqtSignal()
     row_count_ready = pyqtSignal(int)
     status_changed = pyqtSignal(str, str)
+    summarize = pyqtSignal()
 
     def __init__(self, db_reader, parent=None):
         super().__init__(parent)
@@ -67,6 +68,13 @@ class PollWorker(QThread):
 
         if self._tick % 60 == 0:
             self.limit_check.emit()
+
+        if self._tick % 300 == 0:
+            # Run summarization every 5 minutes in a non-blocking way
+            try:
+                self.db.run_summarization()
+            except Exception:
+                pass
 
         if self._tick % 10 == 0:
             count = self.db.get_row_count()

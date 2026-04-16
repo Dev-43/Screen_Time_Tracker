@@ -27,7 +27,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QFrame, QPushButton, QSpinBox,
+    QLabel, QFrame, QPushButton, QSpinBox, QComboBox,
     QSizePolicy, QScrollArea, QGraphicsOpacityEffect,
     QToolTip,
 )
@@ -37,7 +37,7 @@ from ui.theme import (
     ACCENT, ACCENT_DIM, SAFE, SAFE_BG, WARN, WARN_BG, DANGER, DANGER_BG,
     TEXT, TEXT_DIM, FONT_DATA, FONT_UI,
     CHART_TIME, CHART_CPU, CHART_RAM, CHART_BG,
-    app_color,
+    app_color, CATEGORY_COLORS,
 )
 
 import pyqtgraph as pg
@@ -262,8 +262,9 @@ class AppDetailTab(QWidget):
     [CHANGED] App title bar → prepended colored StatusDot.
     [UNCHANGED] All layout proportions, container sizes, limit panel.
     """
-    go_back     = pyqtSignal()
-    limit_saved = pyqtSignal(str, int)   # app_name, minutes
+    go_back        = pyqtSignal()
+    limit_saved    = pyqtSignal(str, int)   # app_name, minutes
+    category_changed = pyqtSignal()          # tell dashboard to refresh
 
     def __init__(self, db_reader, parent=None):
         super().__init__(parent)
@@ -454,6 +455,60 @@ class AppDetailTab(QWidget):
 
         root.addWidget(limit_frame)
 
+        # ── Category panel ────────────────────────────────────────
+        cat_frame = QFrame()
+        cat_frame.setStyleSheet(
+            f"background:{BG_PANEL}; border:1px solid {BORDER}; border-radius:6px;"
+        )
+        cat_lay = QHBoxLayout(cat_frame)
+        cat_lay.setContentsMargins(16, 10, 16, 10)
+        cat_lay.setSpacing(16)
+
+        cat_title = QLabel("APP CATEGORY")
+        cat_title.setStyleSheet(
+            f"color:{ACCENT}; font-family:{FONT_UI}; font-size:9pt; "
+            f"font-weight:bold; letter-spacing:2px; background:transparent; border:none;"
+        )
+        cat_lay.addWidget(cat_title)
+        cat_lay.addStretch()
+
+        lbl_cat = QLabel("Category:")
+        lbl_cat.setStyleSheet(
+            f"color:{TEXT_DIM}; font-family:{FONT_UI}; font-size:9pt; "
+            f"background:transparent; border:none;"
+        )
+        cat_lay.addWidget(lbl_cat)
+
+        from db_reader import CATEGORIES
+        self._cat_combo = QComboBox()
+        self._cat_combo.addItems(CATEGORIES)
+        self._cat_combo.setFixedHeight(30)
+        self._cat_combo.setFixedWidth(160)
+        cat_lay.addWidget(self._cat_combo)
+
+        self._cat_dot = QLabel("■")
+        self._cat_dot.setStyleSheet("font-size:14pt; color:#374151; background:transparent; border:none;")
+        cat_lay.addWidget(self._cat_dot)
+
+        save_cat_btn = QPushButton("Save Category")
+        save_cat_btn.setFixedHeight(30)
+        save_cat_btn.setStyleSheet(f"""
+            QPushButton {{
+                background:{ACCENT_DIM}; color:{BG_BASE};
+                border:1px solid {ACCENT}; border-radius:4px;
+                padding:0 16px; font-weight:bold;
+                font-family:{FONT_UI}; font-size:9pt;
+            }}
+            QPushButton:hover {{ background:{ACCENT}; }}
+        """)
+        save_cat_btn.clicked.connect(self._save_category)
+        cat_lay.addWidget(save_cat_btn)
+
+        # Update dot color when selection changes
+        self._cat_combo.currentTextChanged.connect(self._update_cat_dot)
+
+        root.addWidget(cat_frame)
+
         # Set initial toggle state
         self._apply_toggle("today")
 
@@ -516,6 +571,13 @@ class AppDetailTab(QWidget):
             self._stat_limit._find_val().setText("No limit")
             self._stat_pct._find_val().setText("—")
             self._stat_status._find_val().setText("✓  OK")
+
+        # Load current category into combo
+        current_cat = self.db.get_app_category(app_name)
+        idx = self._cat_combo.findText(current_cat)
+        if idx >= 0:
+            self._cat_combo.setCurrentIndex(idx)
+        self._update_cat_dot(current_cat)
 
         # Draw chart in current view
         if self._view == "today":
@@ -591,6 +653,20 @@ class AppDetailTab(QWidget):
         self.db.set_time_limit(self.app_name, 9999)
         self._stat_limit._find_val().setText("No limit")
         self._stat_pct._find_val().setText("—")
+
+    def _save_category(self):
+        """Persist the selected category and notify the dashboard to refresh."""
+        cat = self._cat_combo.currentText()
+        self.db.set_app_category(self.app_name, cat)
+        self._update_cat_dot(cat)
+        self.category_changed.emit()
+
+    def _update_cat_dot(self, cat: str):
+        """Update the colour swatch next to the combo to reflect the current category."""
+        color = CATEGORY_COLORS.get(cat, "#374151")
+        self._cat_dot.setStyleSheet(
+            f"font-size:14pt; color:{color}; background:transparent; border:none;"
+        )
 
 
 # ── Patch make_stat to expose val label ──────────────────────────────────────
